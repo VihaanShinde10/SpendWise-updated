@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+.env.local
+.env.production
+*.env
+
+# ML Models (too large for git)
+**/data/models/
+**/data/faiss_index/
+**/*.bin
+**/*.safetensors
+**/*.pkl
+
+# Node
+node_modules/
+dist/
+.next/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
