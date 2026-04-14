@@ -2,7 +2,7 @@
 title: SpendWise Backend
 emoji: 💸
 colorFrom: indigo
-colorTo: viloet
+colorTo: purple
 sdk: docker
 pinned: false
 app_port: 7860
