@@ -17,12 +17,12 @@ RUN useradd -m -u 1000 user
 USER user
 WORKDIR $HOME/app
 
-# Copy requirements first to leverage Docker cache
-COPY --chown=user requirements.txt .
+# Copy requirements first
+COPY --chown=user backend/requirements.txt .
 RUN pip install --user -r requirements.txt
 
-# Copy the rest of the code
-COPY --chown=user . .
+# Copy only the backend folder contents to the container root
+COPY --chown=user backend/ .
 
 # Ensure data directories exist
 RUN mkdir -p data/models data/faiss_index
@@ -33,5 +33,5 @@ ENV PATH="/home/user/.local/bin:${PATH}"
 # Expose Hugging Face's default port
 EXPOSE 7860
 
-# Startup command
+# Startup command (app.main:app works because we copied the CONTENTS of backend/)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
