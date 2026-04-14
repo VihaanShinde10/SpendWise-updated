@@ -97,10 +97,13 @@ const GatingAlphaChart = ({ data }: any) => (
   </ResponsiveContainer>
 );
 
-const ClusterScatterPlot = ({ data }: any) => {
+const ClusterScatterPlot = ({ data = [] }: any) => {
   const [mode, setMode] = useState('category');
   
-  const getFill = (point: any) => {
+  // Limit points to prevent UI freeze
+  const displayData = React.useMemo(() => data.slice(0, 800), [data]);
+  
+  const getFill = React.useCallback((point: any) => {
     if (mode === 'source') {
       const colors: any = { semantic: '#6366f1', behavioural: '#ec4899', fused: '#a855f7', zero_shot: '#f59e0b', manual: '#f43f5e' };
       return colors[point.source] || '#64748b';
@@ -146,9 +149,9 @@ const ClusterScatterPlot = ({ data }: any) => {
                     <div className="text-indigo-400">Source: {p.source}</div>
                     <div className="flex items-center gap-2">
                         <div className="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                            <div className="h-full bg-emerald-500" style={{ width: `${p.confidence * 100}%` }} />
+                            <div className="h-full bg-emerald-500" style={{ width: `${(p.confidence || 0) * 100}%` }} />
                         </div>
-                        <span className="text-slate-500">{Math.round(p.confidence * 100)}% conf</span>
+                        <span className="text-slate-500">{Math.round((p.confidence || 0) * 100)}% conf</span>
                     </div>
                   </div>
                 );
@@ -156,8 +159,8 @@ const ClusterScatterPlot = ({ data }: any) => {
               return null;
             }}
           />
-          <Scatter name="Transactions" data={data}>
-            {data.map((entry: any, index: number) => (
+          <Scatter name="Transactions" data={displayData}>
+            {displayData.map((entry: any, index: number) => (
               <Cell key={`cell-${index}`} fill={getFill(entry)} />
             ))}
           </Scatter>
