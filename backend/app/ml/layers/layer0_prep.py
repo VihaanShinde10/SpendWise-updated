@@ -4,10 +4,13 @@ Implements the preprocessing pipeline from Section 4.2 of the paper.
 """
 import re
 import math
+import logging
 import numpy as np
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # 340-entry abbreviation lexicon (core subset — expanded)
 ABBREVIATION_LEXICON = {
@@ -45,7 +48,7 @@ ABBREVIATION_LEXICON = {
     "MUT": "Mutual Fund", "SIP": "SIP Investment", "PMTS": "Payments",
     "IRCTC": "IRCTC", "MSEB": "MSEB Electricity", "BESCOM": "BESCOM Electricity",
     # Transport
-    "RAPIDO": "Rapido", "METRO": "Metro Rail",
+    "METRO": "Metro Rail",
     # Health
     "PHRMCY": "Pharmacy", "APPOLLO": "Apollo Pharmacy",
     "MEDPLS": "MedPlus", "NETMEDS": "Netmeds",
@@ -53,12 +56,29 @@ ABBREVIATION_LEXICON = {
     "VPC": "VPC", "RFD": "Refund", "CSHBCK": "Cashback",
 }
 
+# Pre-built uppercase set for O(1) lookup
+_ABBREV_UPPER: set = set(ABBREVIATION_LEXICON.keys())
+
+# Valid direction strings
+_VALID_DIRECTIONS = {"debit", "credit"}
+
+# Patterns compiled once at module load
 UPI_HANDLE_PATTERN = re.compile(r'@\w+', re.IGNORECASE)
 PAYMENT_CODE_PATTERN = re.compile(
     r'\b(UPI|IMPS|NEFT|REF|TXN|AUTH|POS|P2P|VPA|RRN|UPIREF|UTR|YESB|OKAXIS|OKHDFCBANK|OKICICI)'
     r'[-/]?\w*\b', re.IGNORECASE
 )
 NUMERIC_ONLY_PATTERN = re.compile(r'\b\d{6,}\b')  # long reference numbers
+
+# Detect genuine URLs (http/https/ftp) or email addresses in the *raw* description
+_URL_EMAIL_PATTERN = re.compile(
+    r'(?:https?://|ftp://|www\.)\S+'        # URLs
+    r'|[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',  # emails
+    re.IGNORECASE,
+)
+
+# Tokens that are valid alpha words — reused in cleaning
+_ALPHA_TOKEN_PATTERN = re.compile(r'^[a-zA-Z]{2,}$')
 
 
 @dataclass
@@ -93,15 +113,24 @@ class PreparedTransaction:
     recurrence_strength: float = 0.0
 
     def to_feature_vector(self) -> np.ndarray:
-        """Returns a 33-dimensional feature vector consumed by HDBSCAN."""
+        """Returns a 33-dimensional feature vector consumed by HDBSCAN.
+
+        Indices:
+          0-2   : text features (token_count, char_length, has_url_or_email)
+          3     : log1p(merchant_freq)
+          4-5   : financial (log_amount, direction)
+          6-10  : payment_method_ohe [UPI, IMPS, NEFT, ATM, OTHER]
+          11-12 : hour  (sin, cos)
+          13-14 : day-of-week (sin, cos)
+          15-16 : day-of-month (sin, cos)
+          17-18 : month-of-year (sin, cos)
+          19    : is_recurring
+          20    : recurrence_strength
+          21    : mean_interval
+          22    : std_interval
+          23-32 : reserved / zero-padded
+        """
         pme = self.payment_method_ohe  # 5 dims
-        # text features: 3
-        # merchant_freq: 1 (log-transformed)
-        # financial: 2 (log_amount, direction)
-        # payment_method_ohe: 5
-        # temporal: 8 (4 pairs sin/cos)
-        # behavioural: 4 (is_recurring, recurrence_strength, mean_interval, std_interval)
-        # = 3 + 1 + 2 + 5 + 8 + 4 = 23 dims padded to 33 with zeros
         vec = np.array([
             self.token_count,               # 0
             self.char_length,               # 1
@@ -118,41 +147,73 @@ class PreparedTransaction:
             self.recurrence_strength,       # 20
             self.mean_interval,             # 21
             self.std_interval,              # 22
-        ], dtype=np.float32)
-        # Pad to exactly 33 dims
+        ], dtype=np.float32)               # 23 populated dims
+        # Pad to exactly 33 dims (indices 23–32 reserved for future features)
         padded = np.zeros(33, dtype=np.float32)
         padded[:len(vec)] = vec
         return padded
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
 def _cyclic_encode(value: float, max_val: float) -> tuple:
+    """
+    Maps `value` in [0, max_val) to a unit-circle (sin, cos) pair so that
+    the distance between the highest and lowest values wraps correctly.
+
+    Callers are responsible for passing the correct max_val:
+      - hour      : max_val=24  (values 0–23)
+      - weekday   : max_val=7   (values 0–6)
+      - day-of-month: max_val=32 (values 1–31, avoid 0==31 collapse)
+      - month     : max_val=13  (values 1–12, avoid 0==12 collapse)
+    """
     angle = 2 * math.pi * value / max_val
     return math.sin(angle), math.cos(angle)
 
 
 def _expand_abbreviations(text: str) -> str:
+    """
+    Uppercases and splits `text`, then greedily replaces 2-gram and 1-gram
+    tokens against ABBREVIATION_LEXICON.  Unknown tokens are title-cased only
+    when they are longer than 4 characters; short acronyms (≤4 chars that are
+    not in the lexicon) are kept uppercase so downstream models can still
+    recognise them (e.g. "ATM", "EMI").
+    """
     tokens = text.upper().split()
     expanded = []
     i = 0
     while i < len(tokens):
-        two_gram = " ".join(tokens[i:i+2])
-        if two_gram in ABBREVIATION_LEXICON:
+        two_gram = " ".join(tokens[i:i + 2])
+        if two_gram in _ABBREV_UPPER:
             expanded.append(ABBREVIATION_LEXICON[two_gram])
             i += 2
-        elif tokens[i] in ABBREVIATION_LEXICON:
+        elif tokens[i] in _ABBREV_UPPER:
             expanded.append(ABBREVIATION_LEXICON[tokens[i]])
             i += 1
         else:
-            expanded.append(tokens[i].capitalize())
+            tok = tokens[i]
+            # Title-case only multi-char non-acronym words; keep short caps as-is
+            expanded.append(tok.title() if len(tok) > 4 else tok)
             i += 1
     return " ".join(expanded)
 
 
 def _payment_method_ohe(method: str) -> list:
+    """One-hot encodes the payment method into a 5-dim list."""
     methods = ['UPI', 'IMPS', 'NEFT', 'ATM', 'OTHER']
-    method_upper = method.upper() if method else 'OTHER'
+    method_upper = (method.strip().upper() if isinstance(method, str) and method.strip()
+                    else 'OTHER')
+    if method_upper not in methods:
+        logger.debug("Unknown payment method %r — mapped to OTHER", method)
+        method_upper = 'OTHER'
     return [1 if method_upper == m else 0 for m in methods]
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def prepare_transaction(
     raw_description: str,
@@ -162,29 +223,112 @@ def prepare_transaction(
     transaction_date: datetime,
     balance: Optional[float] = None,
 ) -> PreparedTransaction:
-    """Full Layer 0 processing pipeline."""
+    """Full Layer 0 processing pipeline.
 
-    # Step 1: Remove payment codes and UPI handles
+    Parameters
+    ----------
+    raw_description  : Original transaction narration string.
+    amount           : Absolute transaction amount (must be > 0).
+    direction        : 'debit' or 'credit' (case-insensitive).
+    payment_method   : One of UPI / IMPS / NEFT / ATM / OTHER (case-insensitive).
+    transaction_date : Timezone-aware or naive datetime of the transaction.
+    balance          : Account balance after the transaction, or None if unavailable.
+
+    Returns
+    -------
+    PreparedTransaction dataclass with all Layer 0 fields populated.
+
+    Raises
+    ------
+    TypeError   : If required arguments have the wrong type.
+    ValueError  : If `amount` is non-positive or `direction` is not recognised.
+    """
+
+    # ------------------------------------------------------------------
+    # 0. Input validation
+    # ------------------------------------------------------------------
+    if not isinstance(raw_description, str):
+        raise TypeError(f"raw_description must be str, got {type(raw_description).__name__}")
+
+    if not isinstance(amount, (int, float)):
+        raise TypeError(f"amount must be numeric, got {type(amount).__name__}")
+    amount = float(amount)
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError(f"amount must be a finite positive number, got {amount!r}")
+
+    if not isinstance(direction, str) or direction.strip().lower() not in _VALID_DIRECTIONS:
+        raise ValueError(
+            f"direction must be 'debit' or 'credit', got {direction!r}"
+        )
+    direction_clean = direction.strip().lower()
+
+    if not isinstance(transaction_date, datetime):
+        raise TypeError(
+            f"transaction_date must be a datetime, got {type(transaction_date).__name__}"
+        )
+
+    if balance is not None:
+        if not isinstance(balance, (int, float)):
+            raise TypeError(f"balance must be numeric or None, got {type(balance).__name__}")
+        balance = float(balance)
+        if not math.isfinite(balance):
+            raise ValueError(f"balance must be finite, got {balance!r}")
+
+    # Sanitise raw_description: replace NUL bytes, normalise Unicode whitespace
+    raw_description = raw_description.replace('\x00', ' ')
+    raw_description = re.sub(r'[^\S\n]+', ' ', raw_description).strip()
+
+    # ------------------------------------------------------------------
+    # 1. Detect URL / email BEFORE stripping UPI handles (@ is shared)
+    # ------------------------------------------------------------------
+    has_url_or_email = bool(_URL_EMAIL_PATTERN.search(raw_description))
+
+    # ------------------------------------------------------------------
+    # 2. Strip payment codes, UPI handles, and long reference numbers
+    # ------------------------------------------------------------------
     text = UPI_HANDLE_PATTERN.sub(' ', raw_description)
     text = PAYMENT_CODE_PATTERN.sub(' ', text)
     text = NUMERIC_ONLY_PATTERN.sub(' ', text)
 
-    # Step 2: Expand abbreviations
+    # ------------------------------------------------------------------
+    # 3. Expand abbreviations
+    # ------------------------------------------------------------------
     text = _expand_abbreviations(text)
 
-    # Step 3: Clean whitespace
+    # ------------------------------------------------------------------
+    # 4. Clean whitespace; extract alpha tokens (len ≥ 2)
+    # ------------------------------------------------------------------
     text = re.sub(r'\s+', ' ', text).strip()
-    tokens = [t for t in text.split() if t.isalpha() and len(t) > 1]
+    tokens = [t for t in text.split() if _ALPHA_TOKEN_PATTERN.match(t)]
 
-    # Step 4: Descriptiveness check
+    # ------------------------------------------------------------------
+    # 5. Descriptiveness check and merchant name extraction
+    # ------------------------------------------------------------------
     is_low = len(tokens) < 2
-    merchant_name = " ".join(tokens[:4]) if tokens else raw_description[:30]
+    if tokens:
+        merchant_name = " ".join(tokens[:4])
+    else:
+        # Fallback: first 30 printable chars of original description
+        merchant_name = raw_description[:30].strip() or "Unknown"
+    if not merchant_name:
+        merchant_name = "Unknown"
 
-    # Temporal encoding
-    h = transaction_date.hour
+    # ------------------------------------------------------------------
+    # 6. Temporal cyclic encoding
+    #    hour    : [0, 23]  → max_val=24
+    #    weekday : [0,  6]  → max_val=7
+    #    dom     : [1, 31]  → max_val=32  (prevents day-1 == day-32 wrap)
+    #    month   : [1, 12]  → max_val=13  (prevents Jan==Dec wrap)
+    # ------------------------------------------------------------------
+    h   = transaction_date.hour
     dow = transaction_date.weekday()
     dom = transaction_date.day
     moy = transaction_date.month
+
+    hour_sin, hour_cos = _cyclic_encode(h,   24)
+    dow_sin,  dow_cos  = _cyclic_encode(dow,  7)
+    dom_sin,  dom_cos  = _cyclic_encode(dom, 32)
+    moy_sin,  moy_cos  = _cyclic_encode(moy, 13)
 
     return PreparedTransaction(
         raw_description=raw_description,
@@ -193,18 +337,18 @@ def prepare_transaction(
         is_low_descriptiveness=is_low,
         token_count=len(tokens),
         char_length=len(text),
-        has_url_or_email=bool(re.search(r'[@.]', raw_description)),
+        has_url_or_email=has_url_or_email,
         amount=amount,
-        log_amount=math.log1p(abs(amount)),
-        direction=1 if direction.lower() == 'debit' else 0,
+        log_amount=math.log1p(amount),
+        direction=1 if direction_clean == 'debit' else 0,
         payment_method_ohe=_payment_method_ohe(payment_method),
         balance=balance,
-        hour_sin=_cyclic_encode(h, 24)[0],
-        hour_cos=_cyclic_encode(h, 24)[1],
-        dow_sin=_cyclic_encode(dow, 7)[0],
-        dow_cos=_cyclic_encode(dow, 7)[1],
-        dom_sin=_cyclic_encode(dom, 31)[0],
-        dom_cos=_cyclic_encode(dom, 31)[1],
-        moy_sin=_cyclic_encode(moy, 12)[0],
-        moy_cos=_cyclic_encode(moy, 12)[1],
+        hour_sin=hour_sin,
+        hour_cos=hour_cos,
+        dow_sin=dow_sin,
+        dow_cos=dow_cos,
+        dom_sin=dom_sin,
+        dom_cos=dom_cos,
+        moy_sin=moy_sin,
+        moy_cos=moy_cos,
     )

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { budgetsApi, categoriesApi } from '../lib/api';
 import { PiggyBank, Plus, Trash2, Target, AlertTriangle } from 'lucide-react';

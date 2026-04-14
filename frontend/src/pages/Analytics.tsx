@@ -1,12 +1,11 @@
-import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { analyticsApi, categoriesApi } from '../lib/api';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, AreaChart, Area
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  AreaChart, Area
 } from 'recharts';
 import { format } from 'date-fns';
-import { Repeat, TrendingUp, TrendingDown } from 'lucide-react';
+import { Repeat } from 'lucide-react';
 
 export default function Analytics() {
   const { data: summary } = useQuery({ queryKey: ['summary'], queryFn: async () => (await analyticsApi.summary(1)).data });
@@ -72,7 +71,7 @@ export default function Analytics() {
                 <XAxis dataKey="month" stroke="#94a3b8" tick={{fontSize: 12}} tickLine={false} axisLine={false} />
                 <YAxis stroke="#94a3b8" tick={{fontSize: 12}} tickLine={false} axisLine={false} tickFormatter={(val) => `₹${val/1000}k`} />
                 <Tooltip 
-                  formatter={(value: number) => formatMoney(value)}
+                  formatter={(value: any) => formatMoney(Number(value))}
                   contentStyle={{ backgroundColor: '#1e293b', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
                 />
                 <Area type="monotone" dataKey="received" stroke="#22c55e" strokeWidth={2} fillOpacity={1} fill="url(#colorReceived)" name="Income" />

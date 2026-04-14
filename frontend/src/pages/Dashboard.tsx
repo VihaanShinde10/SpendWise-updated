@@ -1,10 +1,9 @@
-import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { analyticsApi, budgetsApi, mlApi } from '../lib/api';
 import { Link } from 'react-router-dom';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line
+  Tooltip as RechartsTooltip, ResponsiveContainer,
+  PieChart, Pie, Cell
 } from 'recharts';
 import { 
   ArrowUpRight, ArrowDownRight, Wallet, Activity, BrainCircuit, AlertCircle, ArrowRight
@@ -104,7 +103,7 @@ export default function Dashboard() {
                     ))}
                   </Pie>
                   <RechartsTooltip 
-                    formatter={(value: number) => formatMoney(value)}
+                    formatter={(value: any) => formatMoney(Number(value))}
                     contentStyle={{ backgroundColor: '#1e293b', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}
                     itemStyle={{ color: '#fff' }}
                   />

@@ -36,7 +36,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       register: async (email, password, name) => {
-        const res = await authApi.register(email, password, name);
+        await authApi.register(email, password, name);
         // After registration, auto-login
         const loginRes = await authApi.login(email, password);
         const { access_token, user_id } = loginRes.data;

@@ -1,8 +1,7 @@
-import React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { transactionsApi, categoriesApi } from '../lib/api';
 import { format } from 'date-fns';
-import { Tag, Check, X, AlertCircle } from 'lucide-react';
+import { Check } from 'lucide-react';
 
 export default function ReviewQueue() {
   const queryClient = useQueryClient();

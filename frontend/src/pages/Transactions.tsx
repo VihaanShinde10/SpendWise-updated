@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { transactionsApi, categoriesApi } from '../lib/api';
 import { format } from 'date-fns';
-import { Search, Filter, AlertCircle, RefreshCw, Box } from 'lucide-react';
+import { Search, AlertCircle, RefreshCw, Box } from 'lucide-react';
 
 export default function Transactions() {
   const [page, setPage] = useState(1);
